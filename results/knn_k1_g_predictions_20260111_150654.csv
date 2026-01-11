@@ -1,0 +1,6 @@
+﻿index,y_true,y_pred
+0,recommend,recommend
+1,priority,priority
+2,not_recom,not_recom
+3,recommend,recommend
+4,priority,priority
