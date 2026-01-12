@@ -1,68 +1,99 @@
+using MED.Core;
+using MED.Distance;
+using MED.Rules;
+
 namespace MED.Algorithms;
 
-/// <summary>
-/// Simple nearest-centroid classifier (one centroid per label).
-/// </summary>
-public sealed class RiaClassifier : IClassifier
+public sealed class RiaClassifier
 {
-    private readonly IDistanceMetric _distance;
-    private Dictionary<string, double[]>? _centroids;
+    public sealed record Prediction(
+        string TrueLabel,
+        string CId,
+        string NCId,
+        Dictionary<string, int> SupportCounts,
+        Dictionary<string, double> NormalizedSupport);
 
-    public RiaClassifier(IDistanceMetric? distance = null)
+    public Prediction PredictLOO(Dataset full, int testIndex, DistanceMode mode, NominalMetric nom, MissingDistanceMode missing)
     {
-        _distance = distance ?? EuclideanDistance.Instance;
-    }
+        var tst = full.Records[testIndex];
 
-    public void Fit(IReadOnlyList<LabeledVector> trainingData)
-    {
-        ModelGuards.EnsureNonEmpty(trainingData, nameof(trainingData));
-        int featureCount = ModelGuards.EnsureConsistentFeatureLength(trainingData);
+        // train = all except testIndex
+        var trainIdx = Enumerable.Range(0, full.Count).Where(i => i != testIndex).ToArray();
 
-        var sums = new Dictionary<string, (double[] Sum, int Count)>(StringComparer.Ordinal);
+        // context (global/local)
+        var ctx = DistanceContext.Build(full, mode, nom, missing, leaveOutIndex: testIndex);
+        var dist = new MixedDistance(ctx);
 
-        foreach (var row in trainingData)
+        // class sizes (needed for NCId)
+        var classSize = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var i in trainIdx)
         {
-            if (!sums.TryGetValue(row.Label, out var acc))
-            {
-                acc = (new double[featureCount], 0);
-            }
-
-            for (int j = 0; j < featureCount; j++)
-                acc.Sum[j] += row.Features[j];
-
-            acc.Count++;
-            sums[row.Label] = acc;
+            var lab = full.Records[i].Label;
+            classSize.TryGetValue(lab, out var c);
+            classSize[lab] = c + 1;
         }
 
-        _centroids = new Dictionary<string, double[]>(StringComparer.Ordinal);
-        foreach (var kv in sums)
+        // precompute distances tst->trn for bound-based consistency checking
+        var distTo = new (int idx, double d)[trainIdx.Length];
+        for (int k = 0; k < trainIdx.Length; k++)
         {
-            var centroid = new double[featureCount];
-            for (int j = 0; j < featureCount; j++)
-                centroid[j] = kv.Value.Sum[j] / kv.Value.Count;
-
-            _centroids[kv.Key] = centroid;
+            int i = trainIdx[k];
+            distTo[k] = (i, dist.Dist(tst, full.Records[i]));
         }
-    }
 
-    public string Predict(double[] features)
-    {
-        if (_centroids is null) throw new InvalidOperationException("Call Fit() before Predict().");
-        if (features is null) throw new ArgumentNullException(nameof(features));
+        // sort increasing so "verifySet = those with distance <= d_trn" is quick
+        Array.Sort(distTo, (a, b) => a.d.CompareTo(b.d));
 
-        string? bestLabel = null;
-        double bestDist = double.PositiveInfinity;
+        var support = classSize.Keys.ToDictionary(k => k, _ => 0, StringComparer.Ordinal);
 
-        foreach (var kv in _centroids)
+        // For every trn in training set: build ruletst(trn) and test consistency
+        foreach (var (trnIdx, dTrn) in distTo)
         {
-            double d = _distance.Between(features, kv.Value);
-            if (d < bestDist)
+            var trn = full.Records[trnIdx];
+            var rule = new LocalRule(tst, trn, ctx);
+
+            if (IsConsistent(rule, full, dTrn, distTo))
             {
-                bestDist = d;
-                bestLabel = kv.Key;
+                support[trn.Label] = support[trn.Label] + 1;
             }
         }
 
-        return bestLabel ?? string.Empty;
+        // CId: argmax support[v]
+        string cid = support
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .First().Key;
+
+        // NCId: argmax support[v] / |Class(v)|
+        var norm = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var v in support.Keys)
+        {
+            int sz = classSize[v];
+            norm[v] = sz > 0 ? (double)support[v] / sz : 0.0;
+        }
+
+        string ncid = norm
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .First().Key;
+
+        return new Prediction(tst.Label, cid, ncid, support, norm);
+    }
+
+    // Prop 4.1: inconsistency can be caused only by examples not farther than trn from tst. :contentReference[oaicite:4]{index=4}
+    private static bool IsConsistent(LocalRule rule, Dataset full, double dTrn, (int idx, double d)[] sortedByDist)
+    {
+        for (int i = 0; i < sortedByDist.Length; i++)
+        {
+            var (idx, d) = sortedByDist[i];
+            if (d > dTrn) break;
+
+            var x = full.Records[idx];
+
+            if (!string.Equals(x.Label, rule.Decision, StringComparison.Ordinal) && rule.Satisfies(x))
+                return false;
+        }
+
+        return true;
     }
 }

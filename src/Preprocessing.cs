@@ -1,6 +1,6 @@
 namespace MED;
 
-public static class Preprocessing
+public static class Preprocessing1
 {
     public static IReadOnlyList<LabeledVector> Standardize(IReadOnlyList<LabeledVector> data)
     {

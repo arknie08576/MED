@@ -1,0 +1,61 @@
+STAT_RIA
+Generated: 2026-01-12 14:59:17
+
+META:
+ALG: RIA
+DATA: data/nursery.data
+N: 12960
+FEATURES: 8
+MODE: Global
+NOMINAL_METRIC: Svdm
+MISSING_MODE: Variant1
+K: 3
+
+TOTAL_TIME_MS: 1654949
+
+== CId ==
+Accuracy: 0.997608
+BalancedPrecision: 0.998496
+BalancedRecall:    0.998518
+BalancedF1:        0.998507
+
+Confusion matrix (rows=true, cols=pred):
+true\pred	not_recom	priority	recommend	spec_prior	very_recom
+not_recom	4320	0	0	0	0
+priority	0	4246	0	20	0
+recommend	0	0	2	0	0
+spec_prior	0	11	0	4033	0
+very_recom	0	0	0	0	328
+
+
+Per-class metrics:
+Class	Support	TP	FP	FN	Precision	Recall	F1
+not_recom	4320	4320	0	0	1.000000	1.000000	1.000000
+priority	4266	4246	11	20	0.997416	0.995312	0.996363
+recommend	2	2	0	0	1.000000	1.000000	1.000000
+spec_prior	4044	4033	20	11	0.995065	0.997280	0.996171
+very_recom	328	328	0	0	1.000000	1.000000	1.000000
+
+== NCId ==
+Accuracy: 0.997531
+BalancedPrecision: 0.931829
+BalancedRecall:    0.998471
+BalancedF1:        0.958483
+
+Confusion matrix (rows=true, cols=pred):
+true\pred	not_recom	priority	recommend	spec_prior	very_recom
+not_recom	4320	0	0	0	0
+priority	0	4245	1	20	0
+recommend	0	0	2	0	0
+spec_prior	0	11	0	4033	0
+very_recom	0	0	0	0	328
+
+
+Per-class metrics:
+Class	Support	TP	FP	FN	Precision	Recall	F1
+not_recom	4320	4320	0	0	1.000000	1.000000	1.000000
+priority	4266	4245	11	21	0.997415	0.995077	0.996245
+recommend	2	2	1	0	0.666667	1.000000	0.800000
+spec_prior	4044	4033	20	11	0.995065	0.997280	0.996171
+very_recom	328	328	0	0	1.000000	1.000000	1.000000
+

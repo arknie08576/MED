@@ -1,182 +1,448 @@
-﻿using MED;
-using MED.Algorithms;
+﻿using MED.Core;
+using MED.Distance;
 using MED.Evaluation;
 using MED.Output;
+using MED.Preprocessing;
+using MED.Algorithms;
+using MED.Metrics;
+using MED.Utils;
 
-static int GetIntArg(string[] args, string name, int defaultValue)
+static string GetArg(string[] args, string name, string def)
 {
-    int idx = Array.IndexOf(args, name);
-    if (idx < 0 || idx + 1 >= args.Length) return defaultValue;
-    return int.TryParse(args[idx + 1], out var v) ? v : defaultValue;
-}
-
-static string GetStringArg(string[] args, string name, string defaultValue)
-{
-    int idx = Array.IndexOf(args, name);
-    if (idx < 0 || idx + 1 >= args.Length) return defaultValue;
+    var idx = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+    if (idx < 0 || idx + 1 >= args.Length) return def;
     return args[idx + 1];
 }
 
-static int GetIntArgAny(string[] args, int defaultValue, params string[] names)
+static bool HasFlag(string[] args, string name)
+    => args.Any(a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+
+static void PrintHelp()
 {
-    foreach (var name in names)
-    {
-        int idx = Array.IndexOf(args, name);
-        if (idx >= 0 && idx + 1 < args.Length && int.TryParse(args[idx + 1], out var v))
-            return v;
-    }
-    return defaultValue;
+    Console.WriteLine("""
+MED (POLISH C: --all)
+
+Wymagane:
+  --data <path>
+
+Opcje:
+  --alg knn|ria|riona        (domyślnie knn; przy --all traktowane jako "bazowe" ustawienia)
+  --k <int|log2n>            (domyślnie 3)
+  --mode g|l                 (domyślnie g)
+  --nomdist svdm|svdmprime   (domyślnie svdm)
+  --missing v1|v2            (domyślnie v1)
+  --no-impute
+  --no-header
+  --sep <char>               (domyślnie ,)
+
+Wyjścia:
+  --outdir <dir>             (zalecane; auto tworzy OUT_/STAT_/kNN_ nazwy)
+  --out <path>               (ręcznie; ma pierwszeństwo nad --outdir)
+  --stat <path>              (ręcznie; ma pierwszeństwo nad --outdir)
+  --knn-out <path>           (ręcznie; ma pierwszeństwo nad --outdir)
+
+Tryb zbiorczy:
+  --all                      generuje:
+                               kNN: k=1,3,log2n -> pliki kNN_*
+                               RIONA: k=--k -> OUT_* + STAT_*
+  --all-ria                  tylko razem z --all: generuje jeszcze RIA (wolne)
+
+Przykłady:
+  dotnet run -- --all --data data/nursery.data --no-header --k log2n --mode l --outdir out
+  dotnet run -- --all --all-ria --data data/nursery.data --no-header --k 3 --mode g --outdir out
+""");
 }
 
-static string GetStringArgAny(string[] args, string defaultValue, params string[] names)
+var argsArr = args;
+
+if (HasFlag(argsArr, "--help") || HasFlag(argsArr, "-h"))
 {
-    foreach (var name in names)
-    {
-        int idx = Array.IndexOf(args, name);
-        if (idx >= 0 && idx + 1 < args.Length)
-            return args[idx + 1];
-    }
-    return defaultValue;
-}
-
-static bool HasFlag(string[] args, string name) => Array.IndexOf(args, name) >= 0;
-
-static void PrintUsage()
-{
-    Console.WriteLine("Usage:");
-    Console.WriteLine("  dotnet run -- --input <path> [--test <path>] [--schema <path>] [--mode loo|g]");
-    Console.WriteLine("               [--algo knn|ria|riona] [--k <int>] [--nomMetric mismatch|svdm] [--standardize]");
-    Console.WriteLine("               [--outDir <dir>]");
-    Console.WriteLine();
-    Console.WriteLine("Defaults:");
-    Console.WriteLine("  --algo knn");
-    Console.WriteLine("  --k 3");
-    Console.WriteLine("  --mode loo");
-    Console.WriteLine("  --outDir out");
-}
-
-var cliArgs = args;
-
-if (cliArgs.Length == 0 || HasFlag(cliArgs, "--help") || HasFlag(cliArgs, "-h"))
-{
-    PrintUsage();
+    PrintHelp();
     return;
 }
 
-string inputPath = GetStringArgAny(cliArgs, defaultValue: string.Empty, "--data", "--input", "--train");
-if (string.IsNullOrWhiteSpace(inputPath))
+var dataPath = GetArg(argsArr, "--data", "");
+if (string.IsNullOrWhiteSpace(dataPath))
 {
-    Console.Error.WriteLine("Missing required argument: --input <path>");
-    PrintUsage();
-    Environment.ExitCode = 2;
+    Console.WriteLine("Brak --data. Użyj --help.");
     return;
 }
 
-string algo = GetStringArg(cliArgs, "--algo", "knn").Trim().ToLowerInvariant();
-int k = GetIntArgAny(cliArgs, defaultValue: 3, "--k");
-string mode = GetStringArgAny(cliArgs, defaultValue: "loo", "--mode").Trim().ToLowerInvariant();
-string nomMetric = GetStringArgAny(cliArgs, defaultValue: "", "--nomMetric").Trim().ToLowerInvariant();
-bool standardize = HasFlag(cliArgs, "--standardize");
-string outDir = GetStringArgAny(cliArgs, defaultValue: "out", "--out", "--outDir");
-string schemaPath = GetStringArgAny(cliArgs, defaultValue: "", "--schema");
-string testPath = GetStringArgAny(cliArgs, defaultValue: "", "--test");
+var runAll = HasFlag(argsArr, "--all");
+var runAllRia = HasFlag(argsArr, "--all-ria");
 
-if (!string.IsNullOrWhiteSpace(schemaPath) && !File.Exists(schemaPath))
-    Console.WriteLine($"Warning: schema file not found: {schemaPath} (ignored)");
+var alg = GetArg(argsArr, "--alg", "knn").ToLowerInvariant();
+var kArg = GetArg(argsArr, "--k", "3");
 
-bool isNominal = string.Equals(Path.GetExtension(inputPath), ".data", StringComparison.OrdinalIgnoreCase)
-    || !string.IsNullOrWhiteSpace(nomMetric)
-    || (!string.IsNullOrWhiteSpace(schemaPath) && File.Exists(schemaPath));
+var modeStr = GetArg(argsArr, "--mode", "g").ToLowerInvariant();
+var mode = modeStr == "l" ? DistanceMode.Local : DistanceMode.Global;
 
-IReadOnlyList<LabeledVector> train = isNominal
-    ? DataLoader.LoadDelimitedNominal(inputPath, hasHeader: false, separator: ',')
-    : DataLoader.LoadCsv(inputPath, hasHeader: true);
+var nomStr = GetArg(argsArr, "--nomdist", "svdm").ToLowerInvariant();
+var nom = nomStr == "svdmprime" ? NominalMetric.SvdmPrime : NominalMetric.Svdm;
 
-if (!isNominal && standardize)
-    train = Preprocessing.Standardize(train);
+var missStr = GetArg(argsArr, "--missing", "v1").ToLowerInvariant();
+var missing = missStr == "v2" ? MissingDistanceMode.Variant2 : MissingDistanceMode.Variant1;
 
-Func<IDistanceMetric> distanceFactory = () =>
+var sepStr = GetArg(argsArr, "--sep", ",");
+char sep = string.IsNullOrEmpty(sepStr) ? ',' : sepStr[0];
+
+bool hasHeader = !HasFlag(argsArr, "--no-header");
+
+// outputs (manual override)
+var outDir = GetArg(argsArr, "--outdir", "");
+var outPath = GetArg(argsArr, "--out", "");
+var statPath = GetArg(argsArr, "--stat", "");
+var knnOut = GetArg(argsArr, "--knn-out", "");
+
+// --- LOAD
+var tLoad0 = DateTime.UtcNow;
+var loader = new CsvMixedLoader();
+var ds = loader.Load(dataPath, sep: sep, hasHeader: hasHeader);
+var tLoad1 = DateTime.UtcNow;
+
+// resolve k after knowing n
+int k = KResolver.Resolve(kArg, ds.Count);
+string kTag = (kArg.Trim().Equals("log2n", StringComparison.OrdinalIgnoreCase) || kArg.Trim().Equals("log2", StringComparison.OrdinalIgnoreCase))
+    ? "log2n"
+    : k.ToString();
+
+// auto file naming for normal (non --all) flow
+if (!string.IsNullOrWhiteSpace(outDir))
 {
-    if (!isNominal) return EuclideanDistance.Instance;
+    Directory.CreateDirectory(outDir);
 
-    return nomMetric switch
-    {
-        "svdm" => new SvdmDistance(missingPenalty: 1.0),
-        "mismatch" or "" => NominalMismatchDistance.Instance,
-        _ => throw new ArgumentException($"Unknown --nomMetric value '{nomMetric}'. Use: mismatch, svdm.")
-    };
-};
+    var datasetTag = OutputNameBuilder.DatasetTagFromPath(dataPath);
+    var tag = OutputNameBuilder.BuildTag(alg, datasetTag, kTag, mode, nom, missing);
 
-if (isNominal && algo == "ria")
-    throw new ArgumentException("Algorithm 'ria' (centroid) is intended for numeric features; use knn/riona for nominal data.");
+    if (string.IsNullOrWhiteSpace(outPath) && (alg == "ria" || alg == "riona"))
+        outPath = OutputNameBuilder.OutName(outDir, tag);
 
-Func<IClassifier> factory = algo switch
-{
-    "knn" => () => new KnnClassifier(k, distance: distanceFactory()),
-    "riona" => () => new RionaClassifier(k, distance: distanceFactory()),
-    "ria" => () => new RiaClassifier(distance: distanceFactory()),
-    _ => throw new ArgumentException($"Unknown --algo value '{algo}'. Use: knn, ria, riona.")
-};
+    if (string.IsNullOrWhiteSpace(statPath) && (alg == "ria" || alg == "riona"))
+        statPath = OutputNameBuilder.StatName(outDir, tag);
 
-string prefixBase = algo == "ria" ? algo : $"{algo}_k{k}";
-var prefix = $"{prefixBase}_{mode}";
-
-string reportPath;
-string predsPath;
-
-if (mode == "g")
-{
-    if (string.IsNullOrWhiteSpace(testPath))
-    {
-        var dir = Path.GetDirectoryName(inputPath) ?? ".";
-        var stem = Path.GetFileNameWithoutExtension(inputPath);
-        var ext = Path.GetExtension(inputPath);
-        var candidate = Path.Combine(dir, stem + "_test" + ext);
-        if (File.Exists(candidate)) testPath = candidate;
-    }
-
-    if (string.IsNullOrWhiteSpace(testPath))
-        throw new ArgumentException("Mode 'g' requires --test <path> (or a sibling '<input>_test.*' file).");
-
-    IReadOnlyList<LabeledVector> test = isNominal
-        ? DataLoader.LoadDelimitedNominal(testPath, hasHeader: false, separator: ',')
-        : DataLoader.LoadCsv(testPath, hasHeader: true);
-
-    if (!isNominal && standardize)
-    {
-        // Simple standardization applied independently; for proper ML use, compute params on train and apply to test.
-        train = Preprocessing.Standardize(train);
-        test = Preprocessing.Standardize(test);
-    }
-
-    TrainTestResult? result = null;
-    var elapsed = Timing.Measure(() => { result = TrainTestRunner.Run(train, test, factory); });
-
-    reportPath = Naming.MakeOutputPath(outDir, prefix + "_report", "json");
-    predsPath = Naming.MakeOutputPath(outDir, prefix + "_predictions", "csv");
-
-    Writers.WriteReportJson(reportPath, result!.Report);
-    Writers.WritePredictionsCsv(predsPath, result.TrueLabels, result.PredictedLabels);
-
-    Console.WriteLine($"Done. Accuracy={result.Report.Accuracy:P2}, time={elapsed.TotalMilliseconds:F0}ms");
+    if (string.IsNullOrWhiteSpace(knnOut) && alg == "knn")
+        knnOut = OutputNameBuilder.KnnName(outDir, tag);
 }
-else if (mode == "loo")
+
+// --- IMPUTE
+var tImp0 = DateTime.UtcNow;
+if (!HasFlag(argsArr, "--no-impute"))
 {
-    LeaveOneOutResult? result = null;
-    var elapsed = Timing.Measure(() => { result = LeaveOneOutRunner.RunDetailed(train, factory); });
+    ds = new ClassConditionalImputer().Impute(ds);
+}
+var tImp1 = DateTime.UtcNow;
 
-    reportPath = Naming.MakeOutputPath(outDir, prefix + "_report", "json");
-    predsPath = Naming.MakeOutputPath(outDir, prefix + "_predictions", "csv");
+Console.WriteLine($"Loaded: n={ds.Count}, features={ds.FeatureCount}");
+Console.WriteLine($"Mode={mode}, Nominal={nom}, Missing={missing}");
+Console.WriteLine($"k={k} (kArg={kArg})");
 
-    Writers.WriteReportJson(reportPath, result!.Report);
-    Writers.WritePredictionsCsv(predsPath, result.TrueLabels, result.PredictedLabels);
+// ======================
+// POLISH C: --all mode
+// ======================
+if (runAll)
+{
+    if (string.IsNullOrWhiteSpace(outDir))
+    {
+        Console.WriteLine("Dla --all musisz podać --outdir <dir>.");
+        return;
+    }
 
-    Console.WriteLine($"Done. Accuracy={result.Report.Accuracy:P2}, time={elapsed.TotalMilliseconds:F0}ms");
+    var datasetTag = OutputNameBuilder.DatasetTagFromPath(dataPath);
+
+    // ---- 1) kNN for k=1,3,log2n
+    int kLog2 = KResolver.Resolve("log2n", ds.Count);
+    foreach (var kk in new[] { 1, 3, kLog2 })
+    {
+        string kkTag = (kk == kLog2) ? "log2n" : kk.ToString();
+        var tag = OutputNameBuilder.BuildTag("knn", datasetTag, kkTag, mode, nom, missing);
+        var knnPath = OutputNameBuilder.KnnName(outDir, tag);
+
+        var loo = new LeaveOneOutKnn();
+        var tCl0 = DateTime.UtcNow;
+        var result = loo.Run(ds, kk, mode, nom, missing);
+        var tCl1 = DateTime.UtcNow;
+
+        KnnWriter.Write(knnPath, result.NeighborsPerTest.Select(x => (x.Id, x.Neighbors)));
+
+        Console.WriteLine($"[ALL] kNN k={kkTag}: acc={result.Accuracy:F4}, time={(tCl1 - tCl0).TotalMilliseconds:F0} ms -> {knnPath}");
+    }
+
+    // ---- 2) RIONA for requested k (kArg)
+    {
+        var tag = OutputNameBuilder.BuildTag("riona", datasetTag, kTag, mode, nom, missing);
+        var outP = OutputNameBuilder.OutName(outDir, tag);
+        var statP = OutputNameBuilder.StatName(outDir, tag);
+
+        Console.WriteLine($"[ALL] RIONA k={kTag} generating...");
+
+        var riona = new RionaClassifier(k);
+
+        var preds = new RionaClassifier.Prediction[ds.Count];
+        var pairsC = new List<(string True, string Pred)>(ds.Count);
+        var pairsNC = new List<(string True, string Pred)>(ds.Count);
+
+        var tCl0 = DateTime.UtcNow;
+        for (int i = 0; i < ds.Count; i++)
+        {
+            preds[i] = riona.PredictLOO(ds, i, mode, nom, missing);
+            pairsC.Add((preds[i].TrueLabel, preds[i].CId));
+            pairsNC.Add((preds[i].TrueLabel, preds[i].NCId));
+        }
+        var tCl1 = DateTime.UtcNow;
+
+        var tMet0 = DateTime.UtcNow;
+        var mC = ClassificationMetrics.FromPairs(pairsC);
+        var mNC = ClassificationMetrics.FromPairs(pairsNC);
+        var tMet1 = DateTime.UtcNow;
+
+        var tW0 = DateTime.UtcNow;
+        OutWriter.WriteRionaOut(outP, ds, preds);
+        var tW1 = DateTime.UtcNow;
+
+        var meta = new Dictionary<string, string>
+        {
+            ["ALG"] = "RIONA",
+            ["DATA"] = dataPath,
+            ["N"] = ds.Count.ToString(),
+            ["FEATURES"] = ds.FeatureCount.ToString(),
+            ["MODE"] = mode.ToString(),
+            ["NOMINAL_METRIC"] = nom.ToString(),
+            ["MISSING_MODE"] = missing.ToString(),
+            ["K"] = kTag
+        };
+
+        StatWriter.Write(statP, "STAT_RIONA", meta, ds, mode, nom, missing,
+            tLoad1 - tLoad0,
+            tImp1 - tImp0,
+            TimeSpan.Zero,
+            tCl1 - tCl0,
+            tMet1 - tMet0,
+            tW1 - tW0,
+            mC, mNC);
+
+        Console.WriteLine($"[ALL] RIONA: accC={mC.Accuracy:F4}, accNC={mNC.Accuracy:F4}, time={(tCl1 - tCl0).TotalMilliseconds:F0} ms");
+        Console.WriteLine($"[ALL] Saved: {outP}");
+        Console.WriteLine($"[ALL] Saved: {statP}");
+    }
+
+    // ---- 3) Optional RIA
+    if (runAllRia)
+    {
+        var tag = OutputNameBuilder.BuildTag("ria", datasetTag, kTag, mode, nom, missing);
+        var outP = OutputNameBuilder.OutName(outDir, tag);
+        var statP = OutputNameBuilder.StatName(outDir, tag);
+
+        Console.WriteLine($"[ALL] RIA generating (this is slow)...");
+
+        var ria = new RiaClassifier();
+
+        var preds = new RiaClassifier.Prediction[ds.Count];
+        var pairsC = new List<(string True, string Pred)>(ds.Count);
+        var pairsNC = new List<(string True, string Pred)>(ds.Count);
+
+        var tCl0 = DateTime.UtcNow;
+        for (int i = 0; i < ds.Count; i++)
+        {
+            preds[i] = ria.PredictLOO(ds, i, mode, nom, missing);
+            pairsC.Add((preds[i].TrueLabel, preds[i].CId));
+            pairsNC.Add((preds[i].TrueLabel, preds[i].NCId));
+        }
+        var tCl1 = DateTime.UtcNow;
+
+        var tMet0 = DateTime.UtcNow;
+        var mC = ClassificationMetrics.FromPairs(pairsC);
+        var mNC = ClassificationMetrics.FromPairs(pairsNC);
+        var tMet1 = DateTime.UtcNow;
+
+        var tW0 = DateTime.UtcNow;
+        OutWriter.WriteRiaOut(outP, ds, preds);
+        var tW1 = DateTime.UtcNow;
+
+        var meta = new Dictionary<string, string>
+        {
+            ["ALG"] = "RIA",
+            ["DATA"] = dataPath,
+            ["N"] = ds.Count.ToString(),
+            ["FEATURES"] = ds.FeatureCount.ToString(),
+            ["MODE"] = mode.ToString(),
+            ["NOMINAL_METRIC"] = nom.ToString(),
+            ["MISSING_MODE"] = missing.ToString(),
+            ["K"] = kTag
+        };
+
+        StatWriter.Write(statP, "STAT_RIA", meta, ds, mode, nom, missing,
+            tLoad1 - tLoad0,
+            tImp1 - tImp0,
+            TimeSpan.Zero,
+            tCl1 - tCl0,
+            tMet1 - tMet0,
+            tW1 - tW0,
+            mC, mNC);
+
+        Console.WriteLine($"[ALL] RIA: accC={mC.Accuracy:F4}, accNC={mNC.Accuracy:F4}, time={(tCl1 - tCl0).TotalMilliseconds:F0} ms");
+        Console.WriteLine($"[ALL] Saved: {outP}");
+        Console.WriteLine($"[ALL] Saved: {statP}");
+    }
+
+    return;
+}
+
+// ======================
+// Normal mode: knn/ria/riona
+// ======================
+if (alg == "knn")
+{
+    var loo = new LeaveOneOutKnn();
+
+    var tCl0 = DateTime.UtcNow;
+    var result = loo.Run(ds, k, mode, nom, missing);
+    var tCl1 = DateTime.UtcNow;
+
+    Console.WriteLine($"Accuracy: {result.Accuracy:F4}");
+    Console.WriteLine($"Time: {(tCl1 - tCl0).TotalMilliseconds:F0} ms");
+
+    if (!string.IsNullOrWhiteSpace(knnOut))
+    {
+        var tW0 = DateTime.UtcNow;
+        KnnWriter.Write(knnOut, result.NeighborsPerTest.Select(x => (x.Id, x.Neighbors)));
+        var tW1 = DateTime.UtcNow;
+        Console.WriteLine($"Saved kNN file: {knnOut} (write {(tW1 - tW0).TotalMilliseconds:F0} ms)");
+    }
+}
+else if (alg == "ria")
+{
+    if (string.IsNullOrWhiteSpace(outPath))
+    {
+        Console.WriteLine("Dla --alg ria podaj --out lub --outdir.");
+        return;
+    }
+
+    var ria = new RiaClassifier();
+
+    var preds = new RiaClassifier.Prediction[ds.Count];
+    var pairsC = new List<(string True, string Pred)>(ds.Count);
+    var pairsNC = new List<(string True, string Pred)>(ds.Count);
+
+    var tCl0 = DateTime.UtcNow;
+
+    for (int i = 0; i < ds.Count; i++)
+    {
+        preds[i] = ria.PredictLOO(ds, i, mode, nom, missing);
+        pairsC.Add((preds[i].TrueLabel, preds[i].CId));
+        pairsNC.Add((preds[i].TrueLabel, preds[i].NCId));
+        if ((i + 1) % 1000 == 0) Console.WriteLine($"RIA progress: {i + 1}/{ds.Count}");
+    }
+
+    var tCl1 = DateTime.UtcNow;
+
+    var tMet0 = DateTime.UtcNow;
+    var mC = ClassificationMetrics.FromPairs(pairsC);
+    var mNC = ClassificationMetrics.FromPairs(pairsNC);
+    var tMet1 = DateTime.UtcNow;
+
+    Console.WriteLine($"RIA Accuracy (CId):  {mC.Accuracy:F4}");
+    Console.WriteLine($"RIA Accuracy (NCId): {mNC.Accuracy:F4}");
+    Console.WriteLine($"Time: {(tCl1 - tCl0).TotalMilliseconds:F0} ms");
+
+    var tW0 = DateTime.UtcNow;
+    OutWriter.WriteRiaOut(outPath, ds, preds);
+    var tW1 = DateTime.UtcNow;
+    Console.WriteLine($"Saved OUT file: {outPath}");
+
+    if (!string.IsNullOrWhiteSpace(statPath))
+    {
+        var meta = new Dictionary<string, string>
+        {
+            ["ALG"] = "RIA",
+            ["DATA"] = dataPath,
+            ["N"] = ds.Count.ToString(),
+            ["FEATURES"] = ds.FeatureCount.ToString(),
+            ["MODE"] = mode.ToString(),
+            ["NOMINAL_METRIC"] = nom.ToString(),
+            ["MISSING_MODE"] = missing.ToString(),
+            ["K"] = kTag
+        };
+
+        StatWriter.Write(statPath, "STAT_RIA", meta, ds, mode, nom, missing,
+            tLoad1 - tLoad0,
+            tImp1 - tImp0,
+            TimeSpan.Zero,
+            tCl1 - tCl0,
+            tMet1 - tMet0,
+            tW1 - tW0,
+            mC, mNC);
+
+        Console.WriteLine($"Saved STAT file: {statPath}");
+    }
+}
+else if (alg == "riona")
+{
+    if (string.IsNullOrWhiteSpace(outPath))
+    {
+        Console.WriteLine("Dla --alg riona podaj --out lub --outdir.");
+        return;
+    }
+
+    Console.WriteLine($"k={k} (neighborhood size)");
+    var riona = new RionaClassifier(k);
+
+    var preds = new RionaClassifier.Prediction[ds.Count];
+    var pairsC = new List<(string True, string Pred)>(ds.Count);
+    var pairsNC = new List<(string True, string Pred)>(ds.Count);
+
+    var tCl0 = DateTime.UtcNow;
+
+    for (int i = 0; i < ds.Count; i++)
+    {
+        preds[i] = riona.PredictLOO(ds, i, mode, nom, missing);
+        pairsC.Add((preds[i].TrueLabel, preds[i].CId));
+        pairsNC.Add((preds[i].TrueLabel, preds[i].NCId));
+        if ((i + 1) % 1000 == 0) Console.WriteLine($"RIONA progress: {i + 1}/{ds.Count}");
+    }
+
+    var tCl1 = DateTime.UtcNow;
+
+    var tMet0 = DateTime.UtcNow;
+    var mC = ClassificationMetrics.FromPairs(pairsC);
+    var mNC = ClassificationMetrics.FromPairs(pairsNC);
+    var tMet1 = DateTime.UtcNow;
+
+    Console.WriteLine($"RIONA Accuracy (CId):  {mC.Accuracy:F4}");
+    Console.WriteLine($"RIONA Accuracy (NCId): {mNC.Accuracy:F4}");
+    Console.WriteLine($"Time: {(tCl1 - tCl0).TotalMilliseconds:F0} ms");
+
+    var tW0 = DateTime.UtcNow;
+    OutWriter.WriteRionaOut(outPath, ds, preds);
+    var tW1 = DateTime.UtcNow;
+    Console.WriteLine($"Saved OUT file: {outPath}");
+
+    if (!string.IsNullOrWhiteSpace(statPath))
+    {
+        var meta = new Dictionary<string, string>
+        {
+            ["ALG"] = "RIONA",
+            ["DATA"] = dataPath,
+            ["N"] = ds.Count.ToString(),
+            ["FEATURES"] = ds.FeatureCount.ToString(),
+            ["MODE"] = mode.ToString(),
+            ["NOMINAL_METRIC"] = nom.ToString(),
+            ["MISSING_MODE"] = missing.ToString(),
+            ["K"] = kTag
+        };
+
+        StatWriter.Write(statPath, "STAT_RIONA", meta, ds, mode, nom, missing,
+            tLoad1 - tLoad0,
+            tImp1 - tImp0,
+            TimeSpan.Zero,
+            tCl1 - tCl0,
+            tMet1 - tMet0,
+            tW1 - tW0,
+            mC, mNC);
+
+        Console.WriteLine($"Saved STAT file: {statPath}");
+    }
 }
 else
 {
-    throw new ArgumentException($"Unknown --mode value '{mode}'. Use: loo, g.");
+    Console.WriteLine("Nieznany --alg. Użyj knn / ria / riona.");
 }
-
-Console.WriteLine($"Report: {reportPath}");
-Console.WriteLine($"Preds:  {predsPath}");

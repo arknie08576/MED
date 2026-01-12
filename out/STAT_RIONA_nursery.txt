@@ -1,0 +1,86 @@
+STAT_RIONA
+Generated: 2026-01-12 15:32:50
+
+META:
+ALG: RIONA
+DATA: data/nursery.data
+N: 12960
+FEATURES: 8
+MODE: Global
+NOMINAL_METRIC: Svdm
+MISSING_MODE: Variant1
+K: 3
+
+TIMES_MS:
+LOAD:     42
+IMPUTE:   18
+CONTEXT:  0
+CLASSIFY: 187444
+METRICS:  5
+WRITE:    7
+TOTAL:    187515
+
+ATTRIBUTE_STATS:
+DistanceMode: Global
+NominalMetric: Svdm
+MissingMode: Variant1
+
+Numeric attributes (min, max, range):
+(none)
+
+Nominal attributes (domain size):
+f1	domain=3
+f2	domain=5
+f3	domain=4
+f4	domain=4
+f5	domain=3
+f6	domain=2
+f7	domain=3
+f8	domain=3
+
+== CId ==
+Accuracy: 0.993210
+BalancedPrecision: 0.995846
+BalancedRecall:    0.995699
+BalancedF1:        0.995760
+
+Confusion matrix (rows=true, cols=pred):
+true\pred	not_recom	priority	recommend	spec_prior	very_recom
+not_recom	4320	0	0	0	0
+priority	0	4246	0	20	0
+recommend	0	0	2	0	0
+spec_prior	0	68	0	3976	0
+very_recom	0	0	0	0	328
+
+
+Per-class metrics:
+Class	Support	TP	FP	FN	Precision	Recall	F1
+not_recom	4320	4320	0	0	1.000000	1.000000	1.000000
+priority	4266	4246	68	20	0.984237	0.995312	0.989744
+recommend	2	2	0	0	1.000000	1.000000	1.000000
+spec_prior	4044	3976	20	68	0.994995	0.983185	0.989055
+very_recom	328	328	0	0	1.000000	1.000000	1.000000
+
+== NCId ==
+Accuracy: 0.992284
+BalancedPrecision: 0.995297
+BalancedRecall:    0.995106
+BalancedF1:        0.995181
+
+Confusion matrix (rows=true, cols=pred):
+true\pred	not_recom	priority	recommend	spec_prior	very_recom
+not_recom	4320	0	0	0	0
+priority	0	4246	0	20	0
+recommend	0	0	2	0	0
+spec_prior	0	80	0	3964	0
+very_recom	0	0	0	0	328
+
+
+Per-class metrics:
+Class	Support	TP	FP	FN	Precision	Recall	F1
+not_recom	4320	4320	0	0	1.000000	1.000000	1.000000
+priority	4266	4246	80	20	0.981507	0.995312	0.988361
+recommend	2	2	0	0	1.000000	1.000000	1.000000
+spec_prior	4044	3964	20	80	0.994980	0.980218	0.987544
+very_recom	328	328	0	0	1.000000	1.000000	1.000000
+
